@@ -7,11 +7,27 @@ import zipfile
 import os
 import shutil
 import tempfile
+from sentinelhub import (
+    SHConfig, SentinelHubRequest, DataCollection, MimeType, CRS, BBox, Geometry
+)
+from datetime import datetime
+import numpy as np
 
-# Crear directorio temporal para el shapefile
+# Configurar Sentinel Hub (reemplaza con tu clave API)
+config = SHConfig()
+config.instance_id = "TU_INSTANCE_ID"  # Obtén esto desde Sentinel Hub
+config.sh_client_id = "TU_CLIENT_ID"   # Obtén esto desde Sentinel Hub
+config.sh_client_secret = "TU_CLIENT_SECRET"  # Obtén esto desde Sentinel Hub
+
+if not config.instance_id:
+    print("Por favor, configura tu instance_id, client_id y client_secret de Sentinel Hub.")
+    print("Regístrate en https://www.sentinel-hub.com/ para obtenerlos.")
+    exit()
+
+# Crear directorio temporal
 temp_dir = tempfile.mkdtemp()
 
-# Descargar shapefile de Geofabrik
+# Descargar shapefile de carreteras
 url = "http://download.geofabrik.de/north-america/mexico-latest-free.shp.zip"
 zip_path = os.path.join(temp_dir, "mexico_shp.zip")
 
@@ -22,15 +38,15 @@ if response.status_code == 200:
         for chunk in response.iter_content(chunk_size=8192):
             f.write(chunk)
 else:
-    print("Error al descargar el shapefile. Código de estado:", response.status_code)
+    print("Error al descargar el shapefile. Código:", response.status_code)
     exit()
 
-# Descomprimir el archivo
+# Descomprimir
 print("Descomprimiendo shapefile...")
 with zipfile.ZipFile(zip_path, "r") as zip_ref:
     zip_ref.extractall(temp_dir)
 
-# Buscar la capa de carreteras
+# Buscar capa de carreteras
 roads_shp = None
 for root, _, files in os.walk(temp_dir):
     for file in files:
@@ -38,14 +54,14 @@ for root, _, files in os.walk(temp_dir):
             roads_shp = os.path.join(root, file)
             break
 if not roads_shp:
-    print("No se encontró gis_osm_roads_free_1.shp en el archivo descargado.")
+    print("No se encontró gis_osm_roads_free_1.shp.")
     shutil.rmtree(temp_dir)
     exit()
 
-# Crear grafo para la simulación
+# Crear grafo
 G = nx.Graph()
 
-# Añadir nodos con coordenadas (latitud, longitud)
+# Nodos con coordenadas (latitud, longitud)
 nodes = {
     "Chihuahua": (28.63, -106.08),
     "Torreón": (25.54, -103.41),
@@ -58,36 +74,72 @@ nodes = {
 for node, pos in nodes.items():
     G.add_node(node, pos=pos)
 
-# Añadir aristas con pesos (distancias en km, ajustadas por terreno)
+# Aristas con pesos (km, ajustados por terreno)
 edges = [
-    ("Chihuahua", "Torreón", 450),      # Desierto
-    ("Torreón", "Ciudad de México", 800),  # Terreno mixto
-    ("Ciudad de México", "Puebla", 130),   # Montañoso
-    ("Guadalajara", "Querétaro", 350),     # Jalisco
-    ("Querétaro", "Ciudad de México", 200),# Jalisco
+    ("Chihuahua", "Torreón", 450),
+    ("Torreón", "Ciudad de México", 800),
+    ("Ciudad de México", "Puebla", 130),
+    ("Guadalajara", "Querétaro", 350),
+    ("Querétaro", "Ciudad de México", 200),
 ]
 
 for start, end, weight in edges:
     G.add_edge(start, end, weight=weight)
 
-# Calcular rutas más cortas
+# Calcular rutas
 ruta_chihuahua = nx.shortest_path(G, "Chihuahua", "Puebla", weight="weight")
 ruta_jalisco = nx.shortest_path(G, "Guadalajara", "Puebla", weight="weight")
 print("Ruta desde Chihuahua:", ruta_chihuahua)
 print("Ruta desde Jalisco:", ruta_jalisco)
 
-# Cargar shapefile de carreteras
+# Cargar carreteras
 try:
     roads = gpd.read_file(roads_shp)
-    # Filtrar carreteras relevantes (autopistas, primarias, secundarias)
     roads = roads[roads["fclass"].isin(["motorway", "trunk", "primary", "secondary"])]
 except Exception as e:
-    print(f"Error al cargar el shapefile: {e}")
+    print(f"Error al cargar carreteras: {e}")
     shutil.rmtree(temp_dir)
     exit()
 
+# Descargar imagen satelital con Sentinel Hub
+bbox_coords = [-106.5, 18.5, -98.0, 29.0]  # Cubre Chihuahua a Puebla
+bbox = BBox(bbox=bbox_coords, crs=CRS.WGS84)
+
+request = SentinelHubRequest(
+    data_folder=temp_dir,
+    evalscript="""
+        //VERSION=3
+        function setup() {
+            return {
+                input: ["B04", "B03", "B02"],
+                output: { bands: 3 }
+            };
+        }
+        function evaluatePixel(sample) {
+            return [sample.B04 * 2.5, sample.B03 * 2.5, sample.B02 * 2.5];
+        }
+    """,
+    input_data=[
+        SentinelHubRequest.input_data(
+            data_collection=DataCollection.SENTINEL2_L2A,
+            time_interval=("2025-01-01", "2025-04-12"),
+        )
+    ],
+    responses=[SentinelHubRequest.output_response("default", MimeType.PNG)],
+    bbox=bbox,
+    size=[1024, 1024],
+    config=config,
+)
+
+print("Descargando imagen satelital desde Sentinel Hub...")
+image = request.get_data(save_data=True)[0]
+
 # Graficar
 fig, ax = plt.subplots(figsize=(15, 12))
+
+# Mostrar imagen satelital
+extent = [bbox_coords[0], bbox_coords[2], bbox_coords[1], bbox_coords[3]]
+ax.imshow(image, extent=extent, alpha=0.8)
 
 # Dibujar carreteras
 roads.plot(ax=ax, color="darkgreen", linewidth=0.8, alpha=0.7)
@@ -124,16 +176,16 @@ legend_elements = [
     Line2D([0], [0], color="orange", lw=4, linestyle="--", label="Ruta Jalisco-Puebla"),
 ]
 ax.legend(handles=legend_elements, loc="upper left", fontsize=10)
-plt.title("Simulación de Guerra Civil: Rutas Estratégicas a Puebla", fontsize=16, weight="bold")
+plt.title("Simulación de Guerra Civil con Vigilancia Satelital: Rutas a Puebla", fontsize=16, weight="bold")
 plt.xlabel("Longitud", fontsize=12)
 plt.ylabel("Latitud", fontsize=12)
 plt.grid(True, linestyle="--", alpha=0.3)
 plt.tight_layout()
 
-# Guardar el mapa
-plt.savefig("mapa_estrategico_mexico.png", dpi=300, bbox_inches="tight")
+# Guardar mapa
+plt.savefig("mapa_satelital_estrategico.png", dpi=300, bbox_inches="tight")
 plt.show()
 
-# Limpiar directorio temporal
+# Limpiar
 shutil.rmtree(temp_dir)
 print("Directorio temporal limpiado.")
