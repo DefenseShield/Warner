@@ -1,4 +1,3 @@
-import networkx as nx
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -81,52 +80,30 @@ if not os.path.exists(roads_shp_path):
 else:
     print("Shapefile ya existe localmente, usando la versión guardada.")
 
-# Crear grafo
-G = nx.Graph()
-
-# Nodos con coordenadas (latitud, longitud)
-nodes = {
-    "Chihuahua": (28.63, -106.08),
-    "Torreón": (25.54, -103.41),
-    "Ciudad de México": (19.43, -99.13),
-    "Palacio de Puebla": (19.0433, -98.1981),  # Coordenadas del Palacio Municipal de Puebla
-    "Guadalajara": (20.67, -103.33),
-    "Querétaro": (20.59, -100.39),
-}
-
-for node, pos in nodes.items():
-    G.add_node(node, pos=pos)
-
-# Aristas con pesos (km, ajustados por terreno)
-edges = [
-    ("Chihuahua", "Torreón", 450),
-    ("Torreón", "Ciudad de México", 800),
-    ("Ciudad de México", "Palacio de Puebla", 130),
-    ("Guadalajara", "Querétaro", 350),
-    ("Querétaro", "Ciudad de México", 200),
-]
-
-for start, end, weight in edges:
-    G.add_edge(start, end, weight=weight)
-
-# Calcular rutas
-ruta_chihuahua = nx.shortest_path(G, "Chihuahua", "Palacio de Puebla", weight="weight")
-ruta_jalisco = nx.shortest_path(G, "Guadalajara", "Palacio de Puebla", weight="weight")
-print("Ruta desde Chihuahua:", ruta_chihuahua)
-print("Ruta desde Jalisco:", ruta_jalisco)
-
 # Cargar carreteras
 try:
     roads = gpd.read_file(roads_shp_path)
-    roads = roads[roads["fclass"].isin(["motorway", "trunk", "primary", "secondary"])]
+    roads = roads[roads["fclass"].isin(["motorway", "trunk", "primary", "secondary", "tertiary"])]
 except Exception as e:
     print(f"Error al cargar carreteras: {e}")
     exit()
 
-# Descargar imagen satelital con Sentinel Hub
-bbox_coords = [-106.5, 18.5, -98.0, 29.0]  # Cubre Chihuahua a Puebla
+# Definir el área alrededor del Palacio Municipal de Puebla
+palacio_coords = (19.0433, -98.1981)  # Latitud, Longitud
+# Bounding box: ~1 km x 1 km alrededor del Palacio
+delta = 0.009  # Aproximadamente 1 km en grados (1 grado ~ 111 km)
+bbox_coords = [
+    palacio_coords[1] - delta,  # Longitud mínima
+    palacio_coords[0] - delta,  # Latitud mínima
+    palacio_coords[1] + delta,  # Longitud máxima
+    palacio_coords[0] + delta   # Latitud máxima
+]
 bbox = BBox(bbox=bbox_coords, crs=CRS.WGS84)
 
+# Filtrar carreteras dentro del bounding box
+roads = roads.cx[bbox_coords[0]:bbox_coords[2], bbox_coords[1]:bbox_coords[3]]
+
+# Descargar imagen satelital con Sentinel Hub (alta resolución)
 request = SentinelHubRequest(
     data_folder="data/sentinel_images",
     evalscript="""
@@ -149,11 +126,11 @@ request = SentinelHubRequest(
     ],
     responses=[SentinelHubRequest.output_response("default", MimeType.PNG)],
     bbox=bbox,
-    size=[1024, 1024],
+    size=[2048, 2048],  # Alta resolución
     config=config,
 )
 
-print("Descargando imagen satelital desde Sentinel Hub...")
+print("Descargando imagen satelital de alta resolución desde Sentinel Hub...")
 try:
     image = request.get_data(save_data=True)[0]
 except Exception as e:
@@ -166,55 +143,28 @@ fig, ax = plt.subplots(figsize=(15, 12))
 
 # Mostrar imagen satelital
 extent = [bbox_coords[0], bbox_coords[2], bbox_coords[1], bbox_coords[3]]
-ax.imshow(image, extent=extent, alpha=0.8)
+ax.imshow(image, extent=extent, alpha=0.9)
 
-# Dibujar carreteras
-roads.plot(ax=ax, color="darkgreen", linewidth=0.8, alpha=0.7)
+# Dibujar carreteras locales
+roads.plot(ax=ax, color="darkgreen", linewidth=1.5, alpha=0.7)
 
-# Añadir nodos
-pos = nx.get_node_attributes(G, "pos")
-for node, (lat, lon) in pos.items():
-    # Resaltar el Palacio de Puebla con un marcador diferente
-    if node == "Palacio de Puebla":
-        ax.plot(lon, lat, marker="*", color="gold", markersize=20, markeredgecolor="black")
-    else:
-        ax.plot(lon, lat, marker="o", color="red", markersize=15, markeredgecolor="black")
-    ax.text(lon + 0.2, lat, node, fontsize=10, ha="left", weight="bold", color="black")
-
-# Dibujar rutas
-def plot_ruta(ruta, color, label):
-    for i in range(len(ruta) - 1):
-        start = ruta[i]
-        end = ruta[i + 1]
-        start_pos = pos[start]
-        end_pos = pos[end]
-        ax.plot(
-            [start_pos[1], end_pos[1]],
-            [start_pos[0], end_pos[0]],
-            color=color,
-            linewidth=4,
-            linestyle="--",
-            label=label if i == 0 else "",
-        )
-
-plot_ruta(ruta_chihuahua, "blue", "Ruta Chihuahua-Palacio de Puebla")
-plot_ruta(ruta_jalisco, "orange", "Ruta Jalisco-Palacio de Puebla")
+# Añadir el marcador del Palacio
+ax.plot(palacio_coords[1], palacio_coords[0], marker="*", color="gold", markersize=25, markeredgecolor="black")
+ax.text(palacio_coords[1] + 0.001, palacio_coords[0], "Palacio de Puebla", fontsize=12, ha="left", weight="bold", color="black")
 
 # Personalizar
 legend_elements = [
-    Line2D([0], [0], marker="o", color="w", markerfacecolor="red", markeredgecolor="black", markersize=15, label="Punto Estratégico"),
     Line2D([0], [0], marker="*", color="w", markerfacecolor="gold", markeredgecolor="black", markersize=15, label="Palacio de Puebla"),
-    Line2D([0], [0], color="blue", lw=4, linestyle="--", label="Ruta Chihuahua-Palacio"),
-    Line2D([0], [0], color="orange", lw=4, linestyle="--", label="Ruta Jalisco-Palacio"),
+    Line2D([0], [0], color="darkgreen", lw=1.5, label="Carreteras"),
 ]
 ax.legend(handles=legend_elements, loc="upper left", fontsize=10)
-plt.title("Simulación de Guerra Civil con Vigilancia Satelital: Rutas al Palacio de Puebla", fontsize=16, weight="bold")
+plt.title("Simulación de Guerra Civil: Vista Satelital del Palacio de Puebla", fontsize=16, weight="bold")
 plt.xlabel("Longitud", fontsize=12)
 plt.ylabel("Latitud", fontsize=12)
 plt.grid(True, linestyle="--", alpha=0.3)
 plt.tight_layout()
 
-# Guardar mapa ("tomar foto")
-plt.savefig("mapa_rutas_palacio_puebla_2025.png", dpi=300, bbox_inches="tight")
-print("Mapa guardado como 'mapa_rutas_palacio_puebla_2025.png'")
+# Guardar la "foto" en alta resolución
+plt.savefig("foto_palacio_puebla_2025.png", dpi=600, bbox_inches="tight")
+print("Foto guardada como 'foto_palacio_puebla_2025.png'")
 plt.show()
