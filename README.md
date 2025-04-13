@@ -1,22 +1,10 @@
 
-# Notice
-This code is deprecated and all future development has been moved to the [fosscad-repo](https://github.com/maduce/fosscad-repo) repository.
-
-# License
-
-* These files are released open source.
-* GNU General Public License v3.0 (GPLv3).
-
 # Version
 
-* 4.5 (Otacon)
+* 5.0 (Delta Phoenix)
 
-# IRC
-* Server: irc.oftc.net 
-* Channel: #fosscad
-
-# Twitter
-* http://twitter.com/fosscad
+# X
+* http://x.com/USNavy
 
 
 
